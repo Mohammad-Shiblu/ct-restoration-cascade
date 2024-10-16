@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torchvision.transforms.functional as TF
 
 class DoubleConv(nn.Module):
@@ -30,11 +31,13 @@ class Down(nn.Module):
 class Up(nn.Module):
     def __init__(self, in_channels, out_channels):
         super(Up, self).__init__()
-        self.up = nn.ConvTranspose2d(in_channels=in_channels, out_channels=out_channels, kernel_size=2, stride=2)
+        self.up = F.interpolate
+        self.up_conv = nn.Conv2d(in_channels, out_channels, kernel_size=1)
         self.conv = DoubleConv(in_channels, out_channels)
 
     def forward(self, x, skip_c):
-        x = self.up(x)
+        x = self.up(x, scale_factor=2)
+        x = self.up_conv(x)
         if x.shape != skip_c.shape:
             x = TF.resize(x, size=skip_c.shape[2:])
         x = torch.concat((skip_c, x), dim=1)
