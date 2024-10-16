@@ -1,1 +1,6 @@
 synthetic_data/
+
+*test.py
+
+*.pyc
+__pycache__/
