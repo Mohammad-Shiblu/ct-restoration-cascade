@@ -14,7 +14,7 @@ class UNetTrainer(BaseTrainer):
         super().__init__(config, logger)
         self.criterion = lpips.LPIPS(net='alex').to(self.device)
         self.optimizer = optim.AdamW(self.model.parameters(), lr = config['lr'])
-        self.schedular = optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, mode = 'min', factor=0.5, patience=5)
+        self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, mode = 'min', factor=0.5, patience=5)
 
 
     def setup_models(self):
