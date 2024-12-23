@@ -33,10 +33,10 @@ def image_selector(source_dir = "synthetic_data/imagewoof2/train/", target_dir= 
 
 
 # function for generating blcak and white patches in the image
-def add_patches(image, num_patches = 5, size_range = (10, 40)):
+def add_patches(image, num_patches = 4, size_range = (60, 65)):
     patched_image = image.copy()
     height, width, channel = patched_image.shape
-    num = np.random.randint(0, num_patches)
+    num = np.random.randint(3, num_patches)
     for _ in range(num):
         patch_height = np.random.randint(size_range[0], size_range[1])
         patch_width = np.random.randint(size_range[0], size_range[1])
@@ -53,8 +53,8 @@ def add_patches(image, num_patches = 5, size_range = (10, 40)):
 
     return patched_image
 
-def add_noise(image, mean = 0, var = 0.2):
-    noisy_image  = random_noise(image, mode='gaussian', mean = mean, var=var)
+def add_noise(image, mean = 0, var = 0.5):
+    noisy_image  = random_noise(image, mode='gaussian', mean = mean, var=var, clip= True) 
     noisy_image = (noisy_image * 255).astype(np.uint8)
     return noisy_image
 
@@ -66,10 +66,11 @@ def generate_noisy_dataset(image_source, target_source):
         img_path = os.path.join(image_source, filename)
         img = np.array(Image.open(img_path).convert('RGB'))  # img
 
-        patched_image = add_patches(img)
-        noised_image = add_noise(patched_image)
         
-        noised_image = Image.fromarray(noised_image)
+        noised_image = add_noise(img)
+        patched_image = add_patches(noised_image)
+
+        noised_image = Image.fromarray(patched_image)
         output_path = os.path.join(target_source, f"noise_{filename}")
         noised_image.save(output_path)
 
@@ -119,8 +120,11 @@ if __name__ == '__main__':
     # plot_image()
     # # validation image
     # image_selector(source_dir="synthetic_data/imagewoof2/val/", target_dir="synthetic_data/val/clean_images/", size=200)
+
     generate_noisy_dataset("synthetic_data/test/clean_images/", "synthetic_data/test/noisy_images/")
 
-    # show_image()
+
+
+
     
 
