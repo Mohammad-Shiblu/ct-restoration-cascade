@@ -74,15 +74,19 @@ class UNetTrainer(BaseTrainer):
             )
 
             early_stopping.check_early_stop(val_result[0])
+            if early_stopping.counter == 0:
+                self.save_model()
+                self.logger.info(f"best model has been saved at epoch {epoch} with val_loss of {val_result[0]}")
 
             if early_stopping.stop_training:
-                self.save_model() 
-                self.logger.info(f"saved the best model with val loss. {val_result[0]}")
+                self.logger.info(f"Training stopped due to early stopper at epoch {epoch}")
                 self.plot_loss_curves()
-                self.logger.info(f"trained and val loss curves saved")
+                self.logger.info(f"Trained and val loss curves saved")
+                break
         
         self.logger.info(f"All the epochs completed...")
-
+        self.plot_loss_curves()
+        self.logger.info(f"Trained and val loss curves saved")
                             
     def validate(self):
         self.model.eval()

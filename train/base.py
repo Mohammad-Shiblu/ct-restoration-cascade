@@ -50,7 +50,7 @@ class BaseTrainer:
             dataset,
             batch_size=self.config['batch_size'],
             shuffle=shuffle,
-            num_workers=self.config["batch_size"]
+            num_workers=self.config["num_workers"]
         )
 
     def setup_models(self):
@@ -83,7 +83,7 @@ class BaseTrainer:
 
     def save_image(self, fig_name, input, pred, target):
         # save the test images of input, pred, output
-        input, pred, target = input.numpy(), pred.numpy(), target.numpy()
+        input, pred, target = input.cpu().numpy(), pred.cpu().numpy(), target.cpu().numpy()
         ori_metrics, pred_metrics = compute_metrics(input, pred, target)
         f, ax = plt.subplots(1, 3, figsize=(30, 10))
         # input noisy image
@@ -98,7 +98,7 @@ class BaseTrainer:
         ax[2].imshow(target.squeeze(), cmap="gray")
         ax[2].set_title("Full dose", fontsize=28)
 
-        file_path = os.path.join(self.config["output_dir"], self.config['model'], "fig", self.config['test_no'])
+        file_path = os.path.join(self.config["output_dir"], self.config['model'], "fig", self.config['test_no'], "results")
         if not os.path.exists(file_path):
             os.makedirs(file_path)
         
@@ -118,7 +118,7 @@ class BaseTrainer:
         plt.legend()
         plt.grid(True)
 
-        file_path = os.path.join(self.config["output_dir"], self.config['model'], "fig")
+        file_path = os.path.join(self.config["output_dir"], self.config['model'], "fig", self.config['test_no'])
         if not os.path.exists(file_path):
             os.makedirs(file_path)
         plt.savefig(os.path.join(file_path, f"loss_curves{self.config['test_no']}.png"))

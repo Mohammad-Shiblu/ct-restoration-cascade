@@ -1,8 +1,9 @@
 import torch 
 import torch.nn as nn
 from .unet import UNet
-
+from .normalize import Normalize
 import torch.nn.functional as F
+
 
 class MUNet(nn.Module):
     def __init__(self, in_channels=3, out_channels=3, num_unets=2, features=[64, 128, 256, 512, 1024]):
@@ -14,7 +15,7 @@ class MUNet(nn.Module):
                 self.unets.append(UNet(in_channels, out_channels, features))
             else:
                 self.unets.append(UNet(out_channels, out_channels, features))
-            self.instance_norms.append(nn.InstanceNorm2d(out_channels, affine=True))
+            self.instance_norms.append(Normalize())
 
     # def forward(self, x):
     #     outputs = []
@@ -29,3 +30,6 @@ class MUNet(nn.Module):
             x = unet(x)
             x = self.instance_norms[i](x)
         return x
+
+
+    

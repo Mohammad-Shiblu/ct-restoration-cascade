@@ -1,11 +1,12 @@
 synthetic_data/
-check_points/
-experiments/
-log/
 pretrained/
+experiments/
+logs/
+checkpoints/
 fig/
-data_visualization.ipynb
+log/
 *test.py
-
+medical_image_datasets/
 *.pyc
 __pycache__/
+.venv/
