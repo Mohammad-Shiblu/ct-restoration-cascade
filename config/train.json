@@ -6,7 +6,7 @@
     "selected_data": "synthetic_noise",
     "test_no": "test_no_35",
     "test_details": "Testing with unet, cascaded unet with separate training data and lpips loss (with no grad param),\n unet use BatchNorm2d instead of InstanceNorm2d, unet no: 3, batch size: 8",
-    
+
     "checkpoints_dir": "checkpoints/",
     "output_dir": "output/",
 
@@ -16,7 +16,7 @@
     "device": "cuda",
     "lr": 0.001,
     "epochs": 150,
-    "patience": 10,    
+    "patience": 10,
     "num_unets": 3,
     "num_workers": 4,
     "batch_size": 16,

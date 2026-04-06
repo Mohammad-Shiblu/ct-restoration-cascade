@@ -1,5 +1,6 @@
 synthetic_data/
 torch_cache/
+pretrained/
 experiments/
 logs/
 check_points/
