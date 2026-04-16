@@ -1,9 +1,9 @@
 import json
 import torch
 from utils.help import setup_logger
-from train.generic_trainer import UNetTrainer
-from train.munet_trainer import CascadedUnetTrainer
-from train.separate_trainer import ProgressiveCascadedTrainer
+from image_trainer.generic_trainer import UNetTrainer
+from image_trainer.munet_trainer import CascadedUnetTrainer
+from image_trainer.separate_trainer import ProgressiveCascadedTrainer
 import os
 os.environ['TORCH_HOME'] = '/home/shiblu/Project/Masters_thesis/Masters-Thesis/torch_cache'
 
@@ -20,8 +20,8 @@ def main():
 
 
    
-    # system = CascadedUnetTrainer(config= config, logger= logger, test_local=False)
-    # system = UNetTrainer(config=config, logger=logger, test_local= False)
+    # system = CascadedUnetTrainer(config=config, logger=logger, test_local=False)
+    # system = UNetTrainer(config=config, logger=logger, test_local=False)
     system = ProgressiveCascadedTrainer(config=config, logger=logger, test_local=False)
 
     system.run()
