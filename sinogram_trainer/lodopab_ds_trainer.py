@@ -59,8 +59,10 @@ class LoDoPaBDeepSupervisionTrainer(BaseTrainer):
     """Deep supervision image-domain trainer for LoDoPaB-CT."""
 
     def __init__(self, max_samples: int = None, **kwargs):
-        self.max_samples = max_samples
+        # max_samples can be passed as constructor arg or via config["max_samples"]
+        self._max_samples_arg = max_samples
         super().__init__(**kwargs)
+        self.max_samples = max_samples if max_samples is not None else self.config.get("max_samples", None)
         self.num_stages = self.config["num_stages"]
 
         self.logger.info("=" * 80)
@@ -86,11 +88,24 @@ class LoDoPaBDeepSupervisionTrainer(BaseTrainer):
     def setup_data(self):
         self.logger.info("Setting up LoDoPaB datasets …")
 
-        data_path = self.config.get("data_path", None)
+        data_path     = self.config.get("data_path", None)
+        add_artifacts = self.config.get("add_artifacts", False)
+        val_seed      = self.config.get("val_artifact_seed",  42)
+        test_seed     = self.config.get("test_artifact_seed",  0)
 
-        train_ds = LoDoPaBDataset("train",      data_path)
-        val_ds   = LoDoPaBDataset("validation", data_path)
-        test_ds  = LoDoPaBDataset("test",       data_path)
+        train_ds = LoDoPaBDataset("train",      data_path, add_artifacts=add_artifacts)
+        val_ds   = LoDoPaBDataset("validation", data_path, add_artifacts=add_artifacts,
+                                  artifact_seed=val_seed)
+        test_ds  = LoDoPaBDataset("test",       data_path, add_artifacts=add_artifacts,
+                                  artifact_seed=test_seed)
+
+        if add_artifacts:
+            self.logger.info(
+                "Artifact injection ENABLED — "
+                "train: stochastic | "
+                f"val: fixed seed={val_seed} | "
+                f"test: fixed seed={test_seed}"
+            )
 
         if self.test_local:
             train_ds = Subset(train_ds, range(32))
@@ -384,7 +399,6 @@ class LoDoPaBDeepSupervisionTrainer(BaseTrainer):
             noisy_img     = self._sino_to_img(noisy_sino)
             stage_results = self._cascade_forward(noisy_img)
 
-            dr = (gt_img.max() - gt_img.min()).item() + 1e-8
             per_stage_losses = []
             for i, (sr, lf, w) in enumerate(
                 zip(stage_results, self.loss_fns, self.loss_weights)
@@ -399,12 +413,12 @@ class LoDoPaBDeepSupervisionTrainer(BaseTrainer):
                 for ck, cv in lf.components.items():
                     key = f"stage{i}_comp_{ck}"
                     running_comps[key] = running_comps.get(key, 0.0) + cv
-                # Metrics always on the final image output (sr["out"])
+                # Metrics on the final image output — fixed data_range=1.0
                 running[f"stage{i}_psnr"] += float(
-                    compute_psnr(sr["out"], gt_img, data_range=dr)
+                    compute_psnr(sr["out"], gt_img, data_range=1.0)
                 )
                 running[f"stage{i}_ssim"] += float(
-                    compute_ssim(sr["out"], gt_img, data_range=dr)
+                    compute_ssim(sr["out"], gt_img, data_range=1.0)
                 )
             running["total"] += float(
                 torch.stack(per_stage_losses).sum().item()
@@ -538,11 +552,19 @@ class LoDoPaBDeepSupervisionTrainer(BaseTrainer):
 
             noisy_img = self._sino_to_img(noisy_sino)   # (1,1,H,W)
 
-            dr = (gt_img.max() - gt_img.min()).item() + 1e-8
+            # Fixed data_range = 1.0 (full μ_max-normalised scale).
+            # Per-image dynamic range (gt.max - gt.min) is wrong here because:
+            #   1. Lung-dominant slices have a small GT range (≈0.15–0.25), making
+            #      even moderate errors produce negative PSNR.
+            #   2. FBP of metal-artifact sinograms outputs values far outside [0,1],
+            #      whose large pixel errors are then divided by that tiny dr².
+            # Using data_range=1.0 gives consistent, comparable numbers across all
+            # slices and models, matching the LoDoPaB μ_max normalisation convention.
+            DR = 1.0
 
             # Baseline: raw FBP reconstruction of noisy sinogram
-            baseline_psnr += float(compute_psnr(noisy_img, gt_img, data_range=dr))
-            baseline_ssim += float(compute_ssim(noisy_img, gt_img, data_range=dr))
+            baseline_psnr += float(compute_psnr(noisy_img, gt_img, data_range=DR))
+            baseline_ssim += float(compute_ssim(noisy_img, gt_img, data_range=DR))
             baseline_rmse += float(compute_rmse(noisy_img, gt_img))
 
             # Cascade
@@ -550,8 +572,8 @@ class LoDoPaBDeepSupervisionTrainer(BaseTrainer):
             stage_recons  = [sr["out"] for sr in stage_results]
 
             for s, recon in enumerate(stage_recons):
-                stage_psnr[s] += float(compute_psnr(recon, gt_img, data_range=dr))
-                stage_ssim[s] += float(compute_ssim(recon, gt_img, data_range=dr))
+                stage_psnr[s] += float(compute_psnr(recon, gt_img, data_range=DR))
+                stage_ssim[s] += float(compute_ssim(recon, gt_img, data_range=DR))
                 stage_rmse[s] += float(compute_rmse(recon, gt_img))
 
             if i in save_idx:
@@ -608,7 +630,7 @@ class LoDoPaBDeepSupervisionTrainer(BaseTrainer):
         n_plots = 2 + len(stage_recons)   # FBP baseline + N stages + GT
         fig, axes = plt.subplots(1, n_plots, figsize=(5 * n_plots, 5))
         vmin, vmax = 0.0, 0.45            # display window from Leuschner et al. 2021
-        dr = (gt_img.max() - gt_img.min()).item() + 1e-8
+        DR = 1.0                          # fixed data_range — full μ_max-normalised scale
 
         def _to_display(img_t):
             arr = img_t.cpu().squeeze().numpy()
@@ -619,16 +641,16 @@ class LoDoPaBDeepSupervisionTrainer(BaseTrainer):
             ax.set_title(title, fontsize=10)
             ax.axis("off")
 
-        fbp_psnr = float(compute_psnr(noisy_img, gt_img, data_range=dr))
-        fbp_ssim = float(compute_ssim(noisy_img, gt_img, data_range=dr))
+        fbp_psnr = float(compute_psnr(noisy_img, gt_img, data_range=DR))
+        fbp_ssim = float(compute_ssim(noisy_img, gt_img, data_range=DR))
         _show(
             axes[0], noisy_img,
             f"FBP (noisy)\nPSNR: {fbp_psnr:.2f}\nSSIM: {fbp_ssim:.4f}",
         )
 
         for s, recon in enumerate(stage_recons):
-            s_psnr = float(compute_psnr(recon, gt_img, data_range=dr))
-            s_ssim = float(compute_ssim(recon, gt_img, data_range=dr))
+            s_psnr = float(compute_psnr(recon, gt_img, data_range=DR))
+            s_ssim = float(compute_ssim(recon, gt_img, data_range=DR))
             _show(
                 axes[s + 1], recon,
                 f"Stage {s}\nPSNR: {s_psnr:.2f}\nSSIM: {s_ssim:.4f}",

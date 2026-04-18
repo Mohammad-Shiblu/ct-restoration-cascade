@@ -228,6 +228,14 @@ class LoDoPaBDataset(Dataset):
         into each sinogram.  After injection the sinogram is clipped to [0, 1]
         to suppress physically implausible values.  Controlled by
         ``artifact_config``.  Default: False.
+    artifact_seed : int or None
+        When set, artifact generation for each sample is seeded with
+        ``artifact_seed + idx``, making every sample's artifact pattern
+        deterministic and reproducible across epochs and runs.  Use this for
+        validation and test splits so different models always see identical
+        artifact realisations and comparisons are fair.
+        When None (default), artifacts are drawn fresh each call (stochastic),
+        which is the correct behaviour for training.
     artifact_config : dict or None
         Override individual artifact parameters.  Missing keys fall back to
         DEFAULT_ARTIFACT_CONFIG.  Pass e.g.
@@ -265,16 +273,18 @@ class LoDoPaBDataset(Dataset):
         mode:            str  = "train",
         data_path             = None,
         add_artifacts:   bool = False,
+        artifact_seed:   int  = None,
         artifact_config: dict = None,
     ):
         if mode not in LEN:
             raise ValueError(f"mode must be one of {list(LEN)}, got '{mode}'")
 
-        self.mode          = mode
-        self.data_path     = Path(data_path) if data_path else DEFAULT_DATA_PATH
-        self.add_artifacts = add_artifacts
-        self.geometry      = self.GEOMETRY.copy()
-        self._length       = LEN[mode]
+        self.mode           = mode
+        self.data_path      = Path(data_path) if data_path else DEFAULT_DATA_PATH
+        self.add_artifacts  = add_artifacts
+        self.artifact_seed  = artifact_seed
+        self.geometry       = self.GEOMETRY.copy()
+        self._length        = LEN[mode]
 
         # Merge user overrides into defaults
         self._artifact_cfg = {**DEFAULT_ARTIFACT_CONFIG, **(artifact_config or {})}
@@ -348,9 +358,22 @@ class LoDoPaBDataset(Dataset):
         # metal scale can push a small number of bins slightly outside [0, 1].
         # The dataset is already normalised by MU_MAX, so [0, 1] is the correct
         # physical range; no z-score shift is applied.
+        #
+        # When artifact_seed is set (validation / test), the numpy RNG state is
+        # saved, seeded with (artifact_seed + idx) for this sample, then restored
+        # afterwards.  This makes every sample's artifact pattern deterministic
+        # and identical across epochs and different model runs, ensuring fair
+        # comparison without polluting the global RNG used elsewhere.
         if self.add_artifacts:
+            if self.artifact_seed is not None:
+                rng_state = np.random.get_state()
+                np.random.seed(self.artifact_seed + idx)
+
             sino = self._apply_artifacts(sino)
             sino = np.clip(sino, 0.0, 1.0)
+
+            if self.artifact_seed is not None:
+                np.random.set_state(rng_state)
 
         sino_t = torch.from_numpy(sino).unsqueeze(0)   # (1, 1000, 513)
         img_t  = torch.from_numpy(img ).unsqueeze(0)   # (1, 362, 362)
