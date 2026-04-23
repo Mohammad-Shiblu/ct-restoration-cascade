@@ -20,8 +20,8 @@
     "num_workers": 8,
 
     "lr": 3e-4,
-    "epochs": 80,
-    "patience": 10,
+    "epochs": 150,
+    "patience": 15,
 
     "checkpoints_dir": "checkpoints",
     "output_dir": "output"
