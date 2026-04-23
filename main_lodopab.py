@@ -14,13 +14,15 @@ Before first run, download the dataset (~114 GB):
 import json
 import os
 import sys
+from pathlib import Path
 import torch
 
 from sinogram_trainer.lodopab_trainer import LoDoPaBTrainer
 from sinogram_trainer.lodopab_ds_trainer import LoDoPaBDeepSupervisionTrainer
 
-os.environ["TORCH_HOME"] = (
-    "/home/shiblu/Project/Masters_thesis/Masters-Thesis/torch_cache"
+os.environ.setdefault(
+    "TORCH_HOME",
+    str(Path(__file__).parent / "torch_cache"),
 )
 
 
@@ -42,7 +44,7 @@ def main():
 
     
     if "ds" in config_path.lower():
-        trainer = LoDoPaBDeepSupervisionTrainer(config=config, logger=logger, test_local=False, max_samples=30000)
+        trainer = LoDoPaBDeepSupervisionTrainer(config=config, logger=logger, test_local=False)
     else:
         trainer = LoDoPaBTrainer(config=config, logger=logger, test_local=False)
     trainer.run()

@@ -87,12 +87,33 @@ class DifferentiableParallelFBP(nn.Module):
         # torch_radon uses y-upward convention → flip vertically to match
         # standard image (y-downward) orientation used by the GT and trainer.
         images = torch.rot90(images, k=-1, dims=[-2, -1])
+        # Clamp to the physical normalised range [0, 1].  Negative values are
+        # back-projection artefacts; values > 1 arise from metal/ring streaks
+        # that saturate the sinogram.  Both are outside the dataset's value
+        # contract (sinogram and GT are both normalised by MU_MAX to [0, 1]).
+        images = torch.clamp(images, 0.0, 1.0)
         return images.unsqueeze(1)                               # (B, 1, H, W)
 
     @torch.no_grad()
     def reconstruct(self, sinogram: torch.Tensor) -> torch.Tensor:
         """Same as forward but with no_grad (for visualisation / metrics)."""
         return self.forward(sinogram)
+
+    def hann_fbp(self, sinogram: torch.Tensor) -> torch.Tensor:
+        """Hann-filtered FBP — smoother than ramp, suppresses high-frequency noise."""
+        s        = sinogram.squeeze(1)                                    # (B, A, D)
+        filtered = self.radon.filter_sinogram(s, filter_name='hann')
+        images   = self.radon.backprojection(filtered) * self._num_angles
+        images   = torch.rot90(images, k=-1, dims=[-2, -1])
+        return torch.clamp(images, 0.0, None).unsqueeze(1)               # (B, 1, H, W)
+
+    def shepp_logan_fbp(self, sinogram: torch.Tensor) -> torch.Tensor:
+        """Shepp-Logan filtered FBP — sharper than Hann, less noise than ramp."""
+        s        = sinogram.squeeze(1)                                       # (B, A, D)
+        filtered = self.radon.filter_sinogram(s, filter_name='shepp-logan')
+        images   = self.radon.backprojection(filtered) * self._num_angles
+        images   = torch.rot90(images, k=-1, dims=[-2, -1])
+        return torch.clamp(images, 0.0, None).unsqueeze(1)                  # (B, 1, H, W)
 
     # ── Convenience constructors ──────────────────────────────────────────────
 

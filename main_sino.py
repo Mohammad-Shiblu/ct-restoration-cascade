@@ -12,11 +12,13 @@ pipeline (main.py / train/ / utils/dataset.py).
 import json
 import os
 import sys
+from pathlib import Path
 
 import torch
 
-os.environ["TORCH_HOME"] = (
-    "/home/shiblu/Project/Masters_thesis/Masters-Thesis/torch_cache"
+os.environ.setdefault(
+    "TORCH_HOME",
+    str(Path(__file__).parent / "torch_cache"),
 )
 
 

@@ -1,0 +1,28 @@
+{
+    "trainer": "deep_supervision",
+
+    "test_no": "lodopab_baseline_unet_01",
+    "model": "lodopab_deep_supervision",
+
+    "data_path": null,
+
+    "num_stages": 1,
+    "stage0_features": [64, 128, 256, 512],
+
+    "dual_domain": false,
+    "detach_stages": true,
+
+    "add_artifacts": true,
+    "val_artifact_seed": 42,
+    "test_artifact_seed": 0,
+
+    "batch_size": 16,
+    "num_workers": 8,
+
+    "lr": 3e-4,
+    "epochs": 80,
+    "patience": 10,
+
+    "checkpoints_dir": "checkpoints",
+    "output_dir": "output"
+}

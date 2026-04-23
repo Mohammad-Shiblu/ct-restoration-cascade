@@ -9,17 +9,17 @@ class ResidualDoubleConv(nn.Module):
         super().__init__()
         self.conv = nn.Sequential(
             nn.Conv2d(in_channels, out_channels, 3, padding=1, bias=False),
-            nn.BatchNorm2d(out_channels),
+            nn.GroupNorm(8, out_channels),
             nn.ReLU(inplace=True),
             nn.Conv2d(out_channels, out_channels, 3, padding=1, bias=False),
-            nn.BatchNorm2d(out_channels),
+            nn.GroupNorm(8, out_channels),
         )
-        
+
         self.shortcut = nn.Sequential()
         if in_channels != out_channels:
             self.shortcut = nn.Sequential(
                 nn.Conv2d(in_channels, out_channels, 1, bias=False),
-                nn.BatchNorm2d(out_channels)
+                nn.GroupNorm(8, out_channels)
             )
         
         self.relu = nn.ReLU(inplace=True)

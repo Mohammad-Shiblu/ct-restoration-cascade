@@ -48,6 +48,8 @@ from tqdm import tqdm
 from base import BaseTrainer
 from models.image_domain.unet import UNet
 from models.image_domain.resunet import ResUNet
+from models.image_domain.redcnn import REDCNN
+from models.sinogram_domain.dncnn import ResidualCorrectionNet
 from utils.lodopab_dataset import LoDoPaBDataset
 from utils.loss import Stage0Loss, ResidualRefinementLoss
 from utils.metrics import compute_psnr, compute_ssim, compute_rmse
@@ -62,21 +64,38 @@ class LoDoPaBDeepSupervisionTrainer(BaseTrainer):
         # max_samples can be passed as constructor arg or via config["max_samples"]
         self._max_samples_arg = max_samples
         super().__init__(**kwargs)
-        self.max_samples = max_samples if max_samples is not None else self.config.get("max_samples", None)
-        self.num_stages = self.config["num_stages"]
+        self.max_samples  = max_samples if max_samples is not None else self.config.get("max_samples", None)
+        self.num_stages    = self.config["num_stages"]
+        self.dual_domain   = self.config.get("dual_domain", False)
+        self.detach_stages = self.config.get("detach_stages", True)
+        # stage1_mode controls Stage 1+ behaviour:
+        #   "residual" — ResUNet + tanh + ResidualRefinementLoss (default)
+        #   "direct"   — UNet + sigmoid + Stage0Loss (naive cascade baseline)
+        self.stage1_mode   = self.config.get("stage1_mode", "residual")
 
         self.logger.info("=" * 80)
         self.logger.info(
             f"LoDoPaB Deep Supervision Trainer — {self.config['test_no']}"
         )
         self.logger.info("=" * 80)
-        self.logger.info(f"Stages : {self.num_stages}")
+        self.logger.info(f"Stages       : {self.num_stages}")
+        self.logger.info(f"Stage1 mode  : {self.stage1_mode}")
+        self.logger.info(f"Dual-domain  : {self.dual_domain}")
+        self.logger.info(f"Detach stages: {self.detach_stages}")
         self.logger.info(
-            "Pipeline: noisy_sino → FBP(no_grad) → noisy_img → stages → [out_0, …, out_N]"
+            "Pipeline: noisy_sino → FBP/ramp(no_grad) → noisy_img → Stage 0\n"
+            + ("          noisy_sino → Hann-FBP + Shepp-Logan-FBP → cat with stage0_out → Stage 1+\n"
+               if self.dual_domain else
+               "          stage0_out → Stage 1+\n")
         )
-        self.logger.info(
-            "Loss    : Stage 0 → Stage0Loss (SSIM+L1) | Stage 1+ → ResidualRefinementLoss (L1_resid+SSIM+Grad)"
-        )
+        if self.stage1_mode == "direct":
+            self.logger.info(
+                "Loss    : All stages → Stage0Loss (SSIM+L1)  [naive cascade]"
+            )
+        else:
+            self.logger.info(
+                "Loss    : Stage 0 → Stage0Loss (SSIM+L1) | Stage 1+ → ResidualRefinementLoss (L1_resid+SSIM+Grad)"
+            )
 
         self.setup_data()
         self.setup_models()
@@ -141,26 +160,49 @@ class LoDoPaBDeepSupervisionTrainer(BaseTrainer):
         self.logger.info("Setting up stage models …")
         self.stages = nn.ModuleList()
 
+        stage0_arch = self.config.get("stage0_arch", "unet")
+
         for stage in range(self.num_stages):
             if stage == 0:
-                features   = self.config.get("stage0_features", [32, 64, 128])
+                if stage0_arch == "redcnn":
+                    model = REDCNN(
+                        num_filters = self.config.get("redcnn_filters",  96),
+                        kernel_size = self.config.get("redcnn_kernel",    5),
+                        num_layers  = self.config.get("redcnn_layers",    5),
+                        in_channels = 1,
+                    ).to(self.device)
+                    activation = "clamp"   # built into REDCNN.forward
+                else:
+                    features   = self.config.get("stage0_features", [32, 64, 128, 256])
+                    activation = "sigmoid"
+                    model = UNet(
+                        in_channels=1, out_channels=1,
+                        features=features, output_activation=activation,
+                    ).to(self.device)
+            elif self.stage1_mode == "direct":
+                # Naive cascade: same architecture and activation as Stage 0
+                features   = self.config.get("stage0_features", [32, 64, 128, 256])
                 activation = "sigmoid"
                 model = UNet(
                     in_channels=1, out_channels=1,
                     features=features, output_activation=activation,
                 ).to(self.device)
             else:
+                # Residual cascade (default)
                 features   = self.config.get("stage1_features", [16, 32, 64, 128, 256])
                 activation = "tanh"
+                in_ch      = 3 if self.dual_domain else 1
                 model = ResUNet(
-                    in_channels=1, out_channels=1,
+                    in_channels=in_ch, out_channels=1,
                     features=features, output_activation=activation,
                 ).to(self.device)
 
             self.stages.append(model)
+            n_in = 1 if stage == 0 else (3 if self.dual_domain else 1)
             n = sum(p.numel() for p in model.parameters())
             self.logger.info(
-                f"  Stage {stage}: {n:,} parameters  (activation={activation})"
+                f"  Stage {stage}: {n:,} parameters  "
+                f"(in_channels={n_in}, activation={activation})"
             )
 
         total = sum(p.numel() for m in self.stages for p in m.parameters())
@@ -195,7 +237,7 @@ class LoDoPaBDeepSupervisionTrainer(BaseTrainer):
         self.logger.info("Setting up loss functions …")
         self.loss_fns = []
         for stage in range(self.num_stages):
-            if stage == 0:
+            if stage == 0 or self.stage1_mode == "direct":
                 loss_fn   = Stage0Loss().to(self.device)
                 loss_desc = "Stage0Loss  (SSIM=0.5 + L1=0.5)"
             else:
@@ -232,7 +274,7 @@ class LoDoPaBDeepSupervisionTrainer(BaseTrainer):
 
     @torch.no_grad()
     def _sino_to_img(self, noisy_sino: torch.Tensor) -> torch.Tensor:
-        """Convert a batch of noisy sinograms to image domain via FBP.
+        """Convert a batch of noisy sinograms to image domain via ramp-filtered FBP.
 
         Applied with no_grad — FBP is a fixed pre-processor here, not part of
         the learned pipeline.  This is cheaper than the differentiable FBP used
@@ -240,9 +282,24 @@ class LoDoPaBDeepSupervisionTrainer(BaseTrainer):
         """
         return self.fbp(noisy_sino)   # (B, 1, H, W)
 
+    @torch.no_grad()
+    def _compute_dual_channels(self, noisy_sino: torch.Tensor):
+        """Compute the two extra input channels for dual-domain Stage 1.
+
+        Returns
+        -------
+        hann_img : Tensor (B, 1, H, W)  — Hann-filtered FBP (smoother than ramp).
+        sirt_img : Tensor (B, 1, H, W)  — SIRT prior (iterative, no ramp filter).
+        """
+        hann_img = self.fbp.hann_fbp(noisy_sino)
+        sl_img   = self.fbp.shepp_logan_fbp(noisy_sino)
+        return hann_img, sl_img
+
     # ── Cascade forward ───────────────────────────────────────────────────────
 
-    def _cascade_forward(self, noisy_img: torch.Tensor) -> list[dict]:
+    def _cascade_forward(self, noisy_img: torch.Tensor,
+                          hann_img: torch.Tensor = None,
+                          sirt_img: torch.Tensor = None) -> list[dict]:
         """Run the full cascade and return a list of per-stage info dicts.
 
         Stage 0 (UNet, sigmoid) — direct prediction:
@@ -252,27 +309,39 @@ class LoDoPaBDeepSupervisionTrainer(BaseTrainer):
             {"type": "residual", "out": final_out,
              "residual": residual_pred, "prev_out": prev_stage_out}
 
+        When hann_img and sirt_img are provided (dual_domain=True), Stage 1+
+        receives a 3-channel input: [stage0_out, hann_img, sirt_img].
+        Otherwise it receives stage0_out only (single-channel, original behaviour).
+
         Inputs to each stage are detached so each stage's parameters receive
         gradients only from its own loss (deep supervision without cross-stage
         gradient leakage, following munet_trainer design).
-
-        The separate "residual" and "prev_out" fields are needed by
-        ResidualRefinementLoss, which supervises the residual directly
-        and also evaluates the combined final output.
         """
         results = []
 
-        # Stage 0: direct denoising
+        # Stage 0: direct denoising (input unchanged)
         x = self.stages[0](noisy_img)          # sigmoid → (B,1,H,W)  ∈ [0,1]
         results.append({"type": "direct", "out": x})
 
-        # Stage 1+: additive residual correction
+        # Stage 1+: direct prediction (naive cascade) or residual correction
         for s in range(1, self.num_stages):
-            prev_out = x.detach()
-            residual = self.stages[s](prev_out)                        # tanh → [-1, 1]
-            x        = torch.clamp(prev_out + residual, 0.0, 1.0)
-            results.append({"type": "residual", "out": x,
-                            "residual": residual, "prev_out": prev_out})
+            prev_out = x.detach() if self.detach_stages else x
+
+            if self.stage1_mode == "direct":
+                # Naive cascade: Stage 1 predicts the clean image directly
+                # from Stage 0's output — no residual, same loss as Stage 0
+                x = self.stages[s](prev_out)                                     # sigmoid → [0,1]
+                results.append({"type": "direct", "out": x})
+            else:
+                # Residual cascade: Stage 1 predicts additive correction
+                if hann_img is not None and sirt_img is not None:
+                    stage_input = torch.cat([prev_out, hann_img, sirt_img], dim=1)  # (B,3,H,W)
+                else:
+                    stage_input = prev_out                                           # (B,1,H,W)
+                residual = self.stages[s](stage_input)                               # tanh → [-1,1]
+                x        = torch.clamp(prev_out + residual, 0.0, 1.0)
+                results.append({"type": "residual", "out": x,
+                                "residual": residual, "prev_out": prev_out})
 
         return results
 
@@ -330,11 +399,14 @@ class LoDoPaBDeepSupervisionTrainer(BaseTrainer):
             gt_img     = gt_img.to(self.device)       # (B,1,362,362)
 
             # Pre-process: sinogram → image domain (no grad)
-            noisy_img = self._sino_to_img(noisy_sino)  # (B,1,362,362)
+            noisy_img = self._sino_to_img(noisy_sino)         # (B,1,362,362)
+            hann_img = sirt_img = None
+            if self.dual_domain:
+                hann_img, sirt_img = self._compute_dual_channels(noisy_sino)
 
             self.optimizer.zero_grad()
 
-            stage_results = self._cascade_forward(noisy_img)
+            stage_results = self._cascade_forward(noisy_img, hann_img, sirt_img)
 
             # Per-stage losses — signature differs by stage type
             per_stage_losses = []
@@ -396,8 +468,11 @@ class LoDoPaBDeepSupervisionTrainer(BaseTrainer):
             noisy_sino = noisy_sino.to(self.device)
             gt_img     = gt_img.to(self.device)
 
-            noisy_img     = self._sino_to_img(noisy_sino)
-            stage_results = self._cascade_forward(noisy_img)
+            noisy_img = self._sino_to_img(noisy_sino)
+            hann_img = sirt_img = None
+            if self.dual_domain:
+                hann_img, sirt_img = self._compute_dual_channels(noisy_sino)
+            stage_results = self._cascade_forward(noisy_img, hann_img, sirt_img)
 
             per_stage_losses = []
             for i, (sr, lf, w) in enumerate(
@@ -538,9 +613,10 @@ class LoDoPaBDeepSupervisionTrainer(BaseTrainer):
         stage_rmse = [0.0] * self.num_stages
 
         n_test = len(self.test_loader)
-        rng      = np.random.default_rng(seed=42)
+        # VIS_SEED=123 — fixed across all models and baselines for fair comparison
+        rng      = np.random.default_rng(seed=123)
         save_idx = set(
-            rng.choice(n_test, size=min(10, n_test), replace=False).tolist()
+            rng.choice(n_test, size=min(20, n_test), replace=False).tolist()
         )
         self.logger.info(f"Saving visualisations for indices: {sorted(save_idx)}")
 
@@ -551,6 +627,9 @@ class LoDoPaBDeepSupervisionTrainer(BaseTrainer):
             gt_img     = gt_img.to(self.device)
 
             noisy_img = self._sino_to_img(noisy_sino)   # (1,1,H,W)
+            hann_img = sirt_img = None
+            if self.dual_domain:
+                hann_img, sirt_img = self._compute_dual_channels(noisy_sino)
 
             # Fixed data_range = 1.0 (full μ_max-normalised scale).
             # Per-image dynamic range (gt.max - gt.min) is wrong here because:
@@ -568,7 +647,7 @@ class LoDoPaBDeepSupervisionTrainer(BaseTrainer):
             baseline_rmse += float(compute_rmse(noisy_img, gt_img))
 
             # Cascade
-            stage_results = self._cascade_forward(noisy_img)
+            stage_results = self._cascade_forward(noisy_img, hann_img, sirt_img)
             stage_recons  = [sr["out"] for sr in stage_results]
 
             for s, recon in enumerate(stage_recons):

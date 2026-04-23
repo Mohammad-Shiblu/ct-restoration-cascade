@@ -27,15 +27,21 @@ Zip files are deleted after successful extraction to save space.
 """
 
 import argparse
+import os
 import time
 import zipfile
 from pathlib import Path
 
 import requests
 
-# ── Change this to your preferred download location ──────────────────────────
+# ── Override with LODOPAB_DATA_PATH env var, or edit the fallback below ──────
 
-DATA_PATH = Path("/home/shiblu/Project/Masters_thesis/Masters-Thesis/medical_image_datasets/lodopab")
+DATA_PATH = Path(
+    os.environ.get(
+        "LODOPAB_DATA_PATH",
+        Path(__file__).parent.parent / "medical_image_datasets" / "lodopab",
+    )
+)
 
 # ─────────────────────────────────────────────────────────────────────────────
 

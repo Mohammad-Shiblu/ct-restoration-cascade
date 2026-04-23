@@ -45,16 +45,22 @@ Optional synthetic artifacts (add_artifacts=True)
 -------------------------------------------------
   Three additional degradations can be injected on-the-fly in __getitem__
   (not part of the original paper's dataset):
-    • motion_blur  — Gaussian blur along the angle axis; simulates patient motion.
-    • ring         — multiplicative gain error on random detector columns (all
-                     angles); simulates miscalibrated detector elements.  Appears
-                     as bright/dark concentric rings after FBP reconstruction.
-    • metal        — sinusoidal high-attenuation trace; simulates a dense metal
-                     implant.  Causes severe streak artifacts after FBP.
+    • motion_blur  — periodic lateral shift of detector data (Lu & Mackie 2002;
+                     Mao et al. 2007); simulates respiratory patient motion.
+    • ring         — additive post-log offset on random detector columns,
+                     equivalent to a per-column calibration/gain error
+                     (Sijbers & Postnov 2004; Prell et al. 2009).  Appears as
+                     concentric rings after FBP reconstruction.
+    • metal        — image-domain implant mask forward-projected (offline, once,
+                     via scripts/build_metal_library.py) and added to the
+                     sinogram, followed by photon-starvation clipping at the
+                     detector noise floor (Gjesteby et al. 2016; Boas &
+                     Fleischmann 2012).  Produces the characteristic bright/dark
+                     saturation streaks.
 
   Artifacts are injected in the μ_max-normalised sinogram scale [0, 1].
   After injection the sinogram is clipped to [0, 1] to suppress physically
-  implausible values introduced by the multiplicative ring/metal models.
+  implausible values introduced by the ring/metal models.
   No z-score normalisation is applied; the physical [0, 1] scale is kept
   throughout, consistent with the official LoDoPaB-CT challenge baselines.
 
@@ -71,13 +77,20 @@ Geometry (Leuschner et al. 2021, Methods section)
 """
 
 import math
+import os
 from pathlib import Path
 
 import h5py
 import numpy as np
 import torch
-from scipy.ndimage import gaussian_filter1d
+from scipy.ndimage import shift as ndimage_shift
 from torch.utils.data import Dataset
+
+# Default location of the metal-implant library produced by
+# scripts/build_metal_library.py.  Can be overridden per-instance.
+DEFAULT_METAL_LIBRARY = (
+    Path(__file__).resolve().parents[1] / "data" / "metal" / "metal_library.npz"
+)
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -97,117 +110,324 @@ LEN = {
     "test":       3553,
 }
 
-# ── Default data path — must match DATA_PATH in data_prep/download_lodopab.py ──
-DEFAULT_DATA_PATH = Path("/home/shiblu/Project/Masters_thesis/Masters-Thesis/medical_image_datasets/lodopab")
+# ── Default data path — override with LODOPAB_DATA_PATH env var on remote machines ──
+DEFAULT_DATA_PATH = Path(
+    os.environ.get(
+        "LODOPAB_DATA_PATH",
+        Path(__file__).parent.parent / "medical_image_datasets" / "lodopab",
+    )
+)
 
 # ── Default artifact configuration ────────────────────────────────────────────
 
 DEFAULT_ARTIFACT_CONFIG = {
-    # Motion blur: Gaussian σ in number of projection angles along the angle axis.
-    # σ = 1–3 rows corresponds to mild-to-moderate patient motion in a 1000-angle
-    # parallel-beam geometry (~0.18°–0.54° arc per row).  No direct benchmark exists
-    # for this parameterisation; the range is consistent with the "small motion"
-    # regime described in:
-    #   Haggag et al. (2025), arXiv:2509.10961 — HR-pQCT motion simulation study.
-    # p=0.5: applied to half of all samples so the network also trains on
-    # motion-free sinograms; independent of other artifact types.
+    # Motion artifact: periodic lateral shift of the detector data.
+    #
+    # Physical model:
+    #   In parallel-beam CT, a patient translation Δx at projection angle θ
+    #   shifts the sinogram radially:  t → t − Δx·cosθ − Δy·sinθ.
+    #   This is a fundamental property of the Radon transform: any point
+    #   (x₀, y₀) in the image traces a sinusoid in the (θ, t) sinogram.
+    #   For periodic respiratory motion the detector-axis displacement is:
+    #       δt(θ) = A · sin(2π · f · θ / N_angles + φ)
+    #   where A is the amplitude in detector bins and f is the number of
+    #   breathing cycles during the scan.  After FBP, this produces the
+    #   characteristic ghosting and edge-blurring seen in clinical chest/
+    #   abdominal CT with patient motion.
+    #
+    #   References:
+    #     Lu & Mackie (2002), "Tomographic motion detection and correction
+    #       directly in sinogram space", Phys. Med. Biol. 47(8):1267–1284.
+    #       DOI: 10.1088/0031-9155/47/8/304
+    #       [foundational derivation of the t → t − Δx·cosθ shift model]
+    #     Lu et al. (2005), "Reduction of motion blurring artifacts using
+    #       respiratory gated CT in sinogram space: a quantitative evaluation",
+    #       Med. Phys. 32(11):3295–3304.  DOI: 10.1118/1.2074187
+    #       [quantifies respiratory motion ±5–15 mm in abdominal CT]
+    #     Mao et al. (2007), "CT image registration in sinogram space",
+    #       Med. Phys. 34(9):3596–3602.  DOI: 10.1118/1.2767402
+    #       [explicit treatment of rigid translation → sinogram shift]
+    #
+    # Parameters:
+    #   motion_amplitude : (min, max) peak shift in detector bins.
+    #     LoDoPaB detector spacing ≈ 0.72 mm/bin.  10–20 bins ≈ 7–14 mm,
+    #     consistent with moderate respiratory motion in chest/abdominal CT
+    #     (Lu et al. 2005 report ±5–15 mm for abdominal CT).  Amplitudes
+    #     below ~10 bins are masked by the existing Poisson noise floor.
+    #   motion_cycles : (min, max) breathing cycles during the scan.
+    #     0.5–1.5 cycles produces coherent blurring and double contours
+    #     (the "unsharpness" and "double cortices" described in Lu et al.
+    #     2005).  More than ~2 cycles creates rapid oscillations that cause
+    #     aliasing streaks rather than smooth motion blur.
+    #   p=0.5: applied to half of all samples so the network also trains on
+    #   motion-free sinograms.
     "motion_blur":        True,
-    "motion_blur_prob":   0.5,           # per-sample Bernoulli probability
-    "motion_blur_sigma":  (1.0, 3.0),   # (min, max) σ in projection rows; sampled uniformly per item
+    "motion_blur_prob":   0.5,
+    "motion_amplitude":   (10, 20),      # peak shift in detector bins (≈7–14 mm)
+    "motion_cycles":      (0.5, 1.5),   # breathing cycles during scan
 
-    # Ring artifact: multiplicative per-column gain error applied to all angles.
-    # Models detector element miscalibration (gain inhomogeneity).
-    # Gain factor ∈ [0.90, 1.10] corresponds to ±10% gain error — the standard
-    # "realistic" value for medical CT detector miscalibration, established in:
-    #   An et al. (2020), cited as the canonical ring-artifact reference in
-    #   Liang et al. (2025), "Improving Artifact Robustness for CT Deep Learning
-    #   Models Without Labeled Artifact Images via Domain Adaptation",
-    #   arXiv:2510.06584.
-    # Number of affected columns: 1–5 (sparse point failures).  The SynthRAR paper
-    # (Zeng et al., 2025, arXiv:2602.11880) uses 2% of all detectors (~10 columns
-    # for 513 elements) for complete column failures; 1–5 is a conservative subset.
-    # p=0.5: ring artifacts are scanner-hardware-specific, not present in every scan.
+    # Ring artifact: additive per-column offset applied to all angles.
+    #
+    # Physical model
+    # --------------
+    # A detector-element calibration error (dark-current offset, non-uniform
+    # gain, or damaged element) produces a multiplicative photon-count error:
+    #     N_obs = g · N_true
+    # After the post-log transform used by LoDoPaB (y = −ln(N/N0)/μ_max),
+    # this multiplicative error becomes a column-constant *additive* offset:
+    #     y_obs(θ, t_c) = y_true(θ, t_c) + c_c,
+    #     c_c = −ln(g_c) / μ_max.
+    # The same additive-offset ring model is used in Sijbers & Postnov (2004)
+    # Phys. Med. Biol. 49:N247 and Prell et al. (2009) Phys. Med. Biol.
+    # 54:3881, and is the canonical form for learned ring removal in
+    # Liang et al. (2025), arXiv:2510.06584 and the SynthRAR protocol of
+    # Zeng et al. (2025), arXiv:2602.11880.  A constant column offset maps
+    # to a concentric ring after FBP back-projection.
+    #
+    # Parameterisation: we sample the physical gain g_c directly from
+    # ring_gain = (g_lo, g_hi) with 0 < g_lo < g_hi < 1 (under-sensitive
+    # detectors → bright rings).  With probability 0.5 the element is modelled
+    # as over-sensitive by inverting g → 1/g (dark ring), keeping the
+    # perturbation symmetric in log-gain space.  The additive post-log offset
+    # is then c_c = −ln(g_c)/μ_max.  Default gain_range=(0.5, 0.95) spans
+    # realistic 5–50 % gain errors, corresponding to |c_c| ∈ [6.3e-4, 8.5e-3]
+    # — 2–13 × smaller than the signal-driven ±0.02 used in earlier versions
+    # of this code, and consistent with the fractional gain errors reported
+    # in Sijbers & Postnov (2004) and Prell et al. (2009) for partially
+    # damaged and drift-affected detector elements.
+    # Number of affected columns 1–5 out of 513 models sparse point-detector
+    # failures (SynthRAR uses ≈2% column failure rate; our 1–5 is a
+    # conservative subset).
     "ring":               True,
-    "ring_prob":          0.5,           # per-sample Bernoulli probability
-    "ring_n_cols":        (1, 5),        # (min, max) number of affected columns
-    "ring_strength":      (0.90, 1.10),  # multiplicative gain factor (±10%)
+    "ring_prob":          0.5,             # per-sample Bernoulli probability
+    "ring_n_cols":        (1, 5),          # (min, max) number of affected columns
+    "ring_gain":          (0.5, 0.95),     # detector gain range (under-sensitive; inverted with p=0.5)
 
-    # Metal artifact: dense implant sinusoidal trace.
-    # The bin multiplier models the ratio of metal-to-tissue linear attenuation.
-    # At 100 keV (120 kVp polychromatic beam), NIST/XCOM tables give:
-    #   Titanium : μ ≈ 1.22 cm⁻¹  (μ/ρ = 0.272 cm²/g × 4.506 g/cm³)
-    #   Water    : μ ≈ 0.171 cm⁻¹
-    #   Ratio    : ~7×  (iron ≈ 5–6×; gold ≈ 25–30×)
-    # Scale range [4, 8] covers iron through titanium implants.  Reference:
-    #   Wang et al. (2018), "Convolutional Neural Network based Metal Artifact
-    #   Reduction in X-ray Computed Tomography", IEEE TMI, PMC:5998663.
-    # p=0.3: metal implants are patient-specific and less common; lower probability
-    # prevents the severe saturation from dominating the training distribution.
+    # Metal artifact: image-domain mask → forward projection → additive
+    # line-integral contribution → photon-starvation clipping.
+    #
+    # Physical model
+    # --------------
+    # A dense implant adds its attenuation line integral s_metal(θ, t) to the
+    # tissue line integral (monoenergetic Beer–Lambert regime):
+    #     y_total(θ, t) = y_tissue(θ, t) + s_metal(θ, t).
+    # The sinusoidal shadow trace s_metal is obtained by forward-projecting
+    # an image-domain metal mask through the LoDoPaB parallel-beam geometry
+    # (done once offline by scripts/build_metal_library.py).  At runtime we
+    # pick a precomputed centred-mask sinogram from the library and translate
+    # it by (x0, y0) using the Radon shift identity t → t + x0·cos θ + y0·sin θ
+    # (Lu & Mackie 2002; Mao et al. 2007) — avoiding per-sample forward
+    # projection at training time.
+    #
+    # After adding the metal contribution we apply a photon-starvation clip:
+    #     N = N0 · exp(−y · μ_max),   N ← max(N, 1),
+    #     y ← −ln(N/N0) / μ_max.
+    # This enforces the detector noise floor (at most log(N0) ≈ 8.3 / μ_max
+    # ≈ 0.102 in normalised units per ray).  Rays that would count <1 photon
+    # through the implant become the characteristic saturation streaks seen
+    # in clinical metal-artifact CT.  See Gjesteby et al. (2016), IEEE Access
+    # 4:5826 and Boas & Fleischmann (2012), Imaging Med. 4:229 for the
+    # underlying physics.
+    #
+    # metal_scale ∈ [0.10, 0.30] is the peak additive line-integral magnitude
+    # in μ_max-normalised units.  The literature baseline (Gjesteby 2016) is
+    # ≈0.0075 for a 5 mm titanium implant at 100 keV; monoenergetic additive
+    # models omit beam-hardening so a 10–50× amplification is standard to
+    # produce visible, realistic streaks.
+    #
+    # p=0.3: metal implants are patient-specific and less common; lower
+    # probability prevents the severe starvation streaks from dominating the
+    # training distribution.
     "metal":              True,
-    "metal_prob":         0.3,           # per-sample Bernoulli probability
-    "metal_n_objects":    (1, 2),        # (min, max) number of implants
-    "metal_width":        (4, 12),       # detector-bin width of the metal shadow
-    "metal_scale":        (4.0, 8.0),    # attenuation multiplier (4× iron – 8× titanium)
+    "metal_prob":         0.3,                    # per-sample Bernoulli probability
+    "metal_n_objects":    (1, 2),                 # (min, max) number of implants
+    "metal_scale":        (0.10, 0.30),           # peak additive normalised line-integral
+    "metal_radius_frac":  (0.05, 0.35),           # implant radial position, fraction of image size
+    "metal_library_path": None,                   # override; None → DEFAULT_METAL_LIBRARY
+    "metal_starvation":   True,                   # enable photon-starvation clipping
 }
 
 
 # ── Artifact helpers ──────────────────────────────────────────────────────────
 
-def _motion_blur(sino: np.ndarray, sigma: float) -> np.ndarray:
-    """Gaussian blur along the angle axis (axis 0)."""
-    return gaussian_filter1d(sino, sigma=sigma, axis=0).astype(np.float32)
+def _motion_artifact(sino: np.ndarray, amplitude: float, n_cycles: float, phase: float) -> np.ndarray:
+    """Simulate respiratory motion as a periodic lateral shift of detector data.
+
+    Physical model
+    --------------
+    In parallel-beam CT a patient translation Δx at projection angle θ
+    shifts the sinogram radially by  t → t − Δx·cosθ − Δy·sinθ
+    (Lu & Mackie 2002, Phys. Med. Biol. 47:1267; Mao et al. 2007,
+    Med. Phys. 34:3596).  For periodic breathing the displacement is:
+
+        δt(θ) = amplitude · sin(2π · n_cycles · θ / N_angles + phase)
+
+    Each projection row is shifted by its corresponding δt using
+    linear interpolation (scipy.ndimage.shift, mode='nearest').
+    After FBP this produces ghosting and edge-blurring consistent with
+    clinical respiratory motion artifacts (Lu et al. 2005, Med. Phys.
+    32:3295; DOI: 10.1118/1.2074187).
+
+    Parameters
+    ----------
+    sino      : (N_angles, N_detectors) sinogram array.
+    amplitude : Peak shift in detector bins (3–8 bins ≈ 2–6 mm).
+    n_cycles  : Number of complete breathing cycles across the full scan.
+    phase     : Initial phase offset in radians (randomised per sample).
+    """
+    N_angles = sino.shape[0]
+    angle_idx = np.arange(N_angles, dtype=np.float32)
+    displacement = amplitude * np.sin(2.0 * np.pi * n_cycles * angle_idx / N_angles + phase)
+
+    result = np.empty_like(sino)
+    for ai in range(N_angles):
+        # shift along detector axis (axis=0 of the 1-D row)
+        result[ai] = ndimage_shift(sino[ai], displacement[ai], mode='nearest')
+
+    return result.astype(np.float32)
 
 
-def _ring_artifact(sino: np.ndarray, n_cols: int, gain_range: tuple) -> np.ndarray:
-    """Apply multiplicative gain error to random detector columns (all angles).
+def _ring_artifact(
+    sino:          np.ndarray,
+    n_cols:        int,
+    gain_range:    tuple,
+    mu_max:        float = MU_MAX,
+) -> np.ndarray:
+    """Apply a detector-gain calibration error to random detector columns.
 
-    Each selected column is multiplied by a gain factor drawn uniformly from
-    `gain_range`, e.g. (0.90, 1.10) for ±10% miscalibration.  The constant
-    column-wise scaling is the standard ring-artifact model used in the
-    literature (An et al. 2020; arXiv:2510.06584).
+    Physical model
+    --------------
+    A detector element with multiplicative gain error g_c produces the observed
+    photon count N_obs = g_c · N_true.  Pushing this through the LoDoPaB
+    post-log normalisation (y = −ln(N/N0) / μ_max) gives a column-constant
+    *additive* offset in the stored sinogram:
+
+        y_obs(θ, t_c) = y_true(θ, t_c) + c_c,   c_c = −ln(g_c) / μ_max.
+
+    Sampling strategy
+    -----------------
+    We draw the gain magnitude g from a realistic range gain_range = (g_lo, g_hi)
+    with g_lo, g_hi < 1 (under-sensitive detectors → bright rings).  With
+    probability 0.5 the element is instead modelled as over-sensitive by
+    inverting g → 1/g, producing a negative offset (dark ring).  This keeps
+    the perturbation symmetric in log-gain space and gives physically
+    interpretable amplitudes:
+
+        gain_range=(0.5, 0.95) → |c_c| ∈ [6.3e-4, 8.5e-3]    ≈ 5–50 % gain error
+        gain_range=(0.3, 0.9)  → |c_c| ∈ [1.3e-3, 1.5e-2]    ≈ 10–70 % gain error
+
+    After FBP the column-constant offset back-projects into a concentric ring
+    centred on the axis of rotation (Sijbers & Postnov 2004, Prell et al. 2009).
+
+    Parameters
+    ----------
+    gain_range : (g_lo, g_hi) with 0 < g_lo < g_hi < 1
+        Under-sensitive gain range.  Over-sensitive gain (g > 1) is obtained
+        by inverting with probability 0.5.
+    mu_max : float
+        μ_max normalisation constant (default: LoDoPaB's 81.35858 m⁻¹).
     """
     sino = sino.copy()
     cols = np.random.choice(NUM_DET_PIXELS, size=n_cols, replace=False)
     for col in cols:
-        gain = np.random.uniform(*gain_range)
-        sino[:, col] *= gain
+        g = np.random.uniform(*gain_range)
+        if np.random.rand() < 0.5:
+            g = 1.0 / g                              # over-sensitive detector
+        offset = -math.log(g) / mu_max               # c_c = −ln(g) / μ_max
+        sino[:, col] += offset
     return sino
 
 
-def _metal_artifact(
-    sino: np.ndarray,
-    n_objects: int,
-    width: int,
-    scale: float,
-) -> np.ndarray:
-    """Sinusoidal high-attenuation trace simulating a metal implant.
+# ──────────────────────────────────────────────────────────────────────────────
+# Metal artifact — library-based forward-projected implant
+# ──────────────────────────────────────────────────────────────────────────────
 
-    A metal object at image-space position (x₀, y₀) casts its shadow onto
-    detector bin  t(θ) = x₀·cos θ + y₀·sin θ  at each projection angle θ.
-    The bins inside the shadow are multiplied by `scale`.
+_METAL_LIBRARY_CACHE: dict = {}
+
+
+def _load_metal_library(path: Path) -> np.ndarray:
+    """Load (and cache) the precomputed forward-projected metal-mask library.
+
+    The library is produced by scripts/build_metal_library.py and contains
+    per-sample-peak-normalised line-integral sinograms of centred metal masks.
+    """
+    key = str(path)
+    if key not in _METAL_LIBRARY_CACHE:
+        with np.load(path, allow_pickle=True) as npz:
+            sinograms = npz["sinograms"].astype(np.float32)        # (N, A, D)
+        _METAL_LIBRARY_CACHE[key] = sinograms
+    return _METAL_LIBRARY_CACHE[key]
+
+
+def _shift_sinogram_rows(sino: np.ndarray, shifts: np.ndarray) -> np.ndarray:
+    """Shift each projection row by an angle-dependent integer number of bins.
+
+    Implements the Radon shift identity: a translation by (x0, y0) in the
+    image domain produces a per-angle detector-axis shift
+    δt(θ) = x0·cos θ + y0·sin θ.  Integer rounding is adequate here because
+    the metal intensity is randomised and sub-pixel precision is masked by
+    subsequent photon-starvation clipping.
+    """
+    out = np.zeros_like(sino)
+    D   = sino.shape[1]
+    for ai in range(sino.shape[0]):
+        s = int(round(float(shifts[ai])))
+        if   s == 0:   out[ai]      = sino[ai]
+        elif s > 0:
+            if s < D:  out[ai, s:]  = sino[ai, :D - s]
+        else:
+            k = -s
+            if k < D:  out[ai, :D - k] = sino[ai, k:]
+    return out
+
+
+def _metal_artifact(
+    sino:          np.ndarray,
+    library:       np.ndarray,
+    n_objects:     int,
+    scale_range:   tuple,
+    radius_range:  tuple,
+    n0:            float,
+    mu_max:        float,
+    starvation:    bool = True,
+) -> np.ndarray:
+    """Add one or more metal implants to a post-log sinogram.
+
+    Pipeline per implant
+    --------------------
+    1. Sample a centred metal sinogram s_0(θ, t) from the precomputed library.
+    2. Sample an image-domain position (x0, y0) and apply the per-angle
+       detector-axis shift δt(θ) = x0·cos θ + y0·sin θ (Radon shift identity).
+    3. Scale the shifted sinogram by a per-sample peak magnitude drawn from
+       scale_range and add it to the input sinogram.
+    After all implants have been added, apply photon-starvation clipping:
+    rays counting fewer than 1 photon at detector level are clipped to the
+    noise floor, producing the characteristic metal-streak saturation.
     """
     sino   = sino.copy()
     angles = np.linspace(0.0, math.pi, NUM_ANGLES, endpoint=False)
-    center = NUM_DET_PIXELS // 2
 
     for _ in range(n_objects):
-        # Random metal object position in pixel coordinates (image-space)
-        radius = np.random.uniform(0.05, 0.35) * IMAGE_SIZE
-        theta0 = np.random.uniform(0, 2 * math.pi)
-        x0     = radius * math.cos(theta0)
-        y0     = radius * math.sin(theta0)
-        w      = width if isinstance(width, int) else np.random.randint(*width)
-        s      = scale if isinstance(scale, (int, float)) else np.random.uniform(*scale)
+        idx     = int(np.random.randint(0, library.shape[0]))
+        s0      = library[idx]                                      # (A, D)  peak ≈ 1
 
-        # Detector position of the shadow at each angle — shape (NUM_ANGLES,)
-        det_pos = (x0 * np.cos(angles) + y0 * np.sin(angles) + center).astype(int)
+        r_lo, r_hi = radius_range
+        r       = np.random.uniform(r_lo, r_hi) * IMAGE_SIZE        # px
+        theta0  = np.random.uniform(0, 2.0 * math.pi)
+        x0, y0  = r * math.cos(theta0), r * math.sin(theta0)
+        shifts  = x0 * np.cos(angles) + y0 * np.sin(angles)         # (A,)
 
-        for ai in range(NUM_ANGLES):
-            d       = det_pos[ai]
-            d_start = max(0, d - w // 2)
-            d_end   = min(NUM_DET_PIXELS, d + w // 2 + 1)
-            if d_start < d_end:
-                sino[ai, d_start:d_end] *= s
+        scale   = np.random.uniform(*scale_range)
+        sino   += scale * _shift_sinogram_rows(s0, shifts)
+
+    if starvation:
+        # Photon-starvation clipping in the detector (pre-log) domain.
+        # Work in the un-normalised post-log variable y_phys = sino * μ_max;
+        # detector count N = N0·exp(−y_phys) must be ≥ 1 (noise floor).
+        y_phys = np.maximum(sino * mu_max, 0.0)
+        N      = n0 * np.exp(-y_phys)
+        N      = np.maximum(N, 1.0)
+        sino   = (-np.log(N / n0) / mu_max).astype(np.float32)
 
     return sino
 
@@ -289,6 +509,20 @@ class LoDoPaBDataset(Dataset):
         # Merge user overrides into defaults
         self._artifact_cfg = {**DEFAULT_ARTIFACT_CONFIG, **(artifact_config or {})}
 
+        # Lazily load the metal library if metal injection is enabled.
+        # The library is shared across all Dataset instances via the
+        # module-level _METAL_LIBRARY_CACHE dict (one entry per path).
+        self._metal_library = None
+        if self.add_artifacts and self._artifact_cfg.get("metal", False):
+            lib_path = self._artifact_cfg.get("metal_library_path") or DEFAULT_METAL_LIBRARY
+            lib_path = Path(lib_path)
+            if not lib_path.exists():
+                raise FileNotFoundError(
+                    f"Metal library not found at {lib_path}.\n"
+                    f"Run:  conda run -n tensor python scripts/build_metal_library.py"
+                )
+            self._metal_library = _load_metal_library(lib_path)
+
         # Validate that at least the first file exists
         first_obs = self.data_path / f"observation_{mode}_000.hdf5"
         if not first_obs.exists():
@@ -309,23 +543,33 @@ class LoDoPaBDataset(Dataset):
         cfg = self._artifact_cfg
 
         if cfg.get("motion_blur", False) and np.random.rand() < cfg.get("motion_blur_prob", 1.0):
-            lo, hi = cfg["motion_blur_sigma"]
-            sigma  = np.random.uniform(lo, hi)
-            sino   = _motion_blur(sino, sigma)
+            a_lo, a_hi = cfg["motion_amplitude"]
+            c_lo, c_hi = cfg["motion_cycles"]
+            amplitude  = np.random.uniform(a_lo, a_hi)
+            n_cycles   = np.random.uniform(c_lo, c_hi)
+            phase      = np.random.uniform(0, 2 * np.pi)
+            sino       = _motion_artifact(sino, amplitude, n_cycles, phase)
 
         if cfg.get("ring", False) and np.random.rand() < cfg.get("ring_prob", 1.0):
             n_lo, n_hi = cfg["ring_n_cols"]
             n_cols     = np.random.randint(n_lo, n_hi + 1)
-            sino       = _ring_artifact(sino, n_cols, cfg["ring_strength"])
+            gain_range = cfg.get("ring_gain", (0.5, 0.95))
+            sino       = _ring_artifact(sino, n_cols, gain_range)
 
-        if cfg.get("metal", False) and np.random.rand() < cfg.get("metal_prob", 1.0):
+        if (cfg.get("metal", False)
+                and self._metal_library is not None
+                and np.random.rand() < cfg.get("metal_prob", 1.0)):
             n_lo, n_hi = cfg["metal_n_objects"]
             n_obj      = np.random.randint(n_lo, n_hi + 1)
             sino       = _metal_artifact(
                 sino,
-                n_objects = n_obj,
-                width     = cfg["metal_width"],
-                scale     = cfg["metal_scale"],
+                library      = self._metal_library,
+                n_objects    = n_obj,
+                scale_range  = cfg["metal_scale"],
+                radius_range = cfg.get("metal_radius_frac", (0.05, 0.35)),
+                n0           = N0,
+                mu_max       = MU_MAX,
+                starvation   = cfg.get("metal_starvation", True),
             )
 
         return sino

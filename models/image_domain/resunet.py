@@ -9,12 +9,12 @@ class ResidualDoubleConv(nn.Module):
     DoubleConv block with an intra-block residual shortcut (ResNet-style).
 
     Standard DoubleConv path:
-        x → Conv-BN-ReLU → Conv-BN → output
+        x → Conv-GN(8)-ReLU → Conv-GN(8) → output
 
     Residual path adds a shortcut before the final ReLU:
-        output = ReLU( Conv-BN-ReLU → Conv-BN(x)  +  shortcut(x) )
+        output = ReLU( Conv-GN(8)-ReLU → Conv-GN(8)(x)  +  shortcut(x) )
 
-    The shortcut is a 1×1 conv + BN when in_channels ≠ out_channels,
+    The shortcut is a 1×1 conv + GN(8) when in_channels ≠ out_channels,
     or a plain identity when they match.
 
     Why this helps Stage 1 (residual corrector)
@@ -32,17 +32,17 @@ class ResidualDoubleConv(nn.Module):
 
         self.conv = nn.Sequential(
             nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(out_channels),
+            nn.GroupNorm(8, out_channels),
             nn.ReLU(inplace=True),
             nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(out_channels),
+            nn.GroupNorm(8, out_channels),
         )
 
         # 1×1 projection shortcut when channel dims differ; identity otherwise
         if in_channels != out_channels:
             self.shortcut = nn.Sequential(
                 nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False),
-                nn.BatchNorm2d(out_channels),
+                nn.GroupNorm(8, out_channels),
             )
         else:
             self.shortcut = nn.Identity()

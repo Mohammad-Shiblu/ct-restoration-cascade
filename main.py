@@ -1,11 +1,16 @@
 import json
+import os
+from pathlib import Path
 import torch
 from utils.help import setup_logger
 from image_trainer.generic_trainer import UNetTrainer
 from image_trainer.munet_trainer import CascadedUnetTrainer
 from image_trainer.separate_trainer import ProgressiveCascadedTrainer
-import os
-os.environ['TORCH_HOME'] = '/home/shiblu/Project/Masters_thesis/Masters-Thesis/torch_cache'
+
+os.environ.setdefault(
+    "TORCH_HOME",
+    str(Path(__file__).parent / "torch_cache"),
+)
 
 
 def main():

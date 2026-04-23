@@ -47,7 +47,7 @@ class ResidualCorrectionNet(nn.Module):
         # Intermediate blocks: Conv + BN + ReLU
         for _ in range(num_layers):
             layers.append(nn.Conv2d(num_features, num_features, kernel_size=3, padding=1, bias=False))
-            layers.append(nn.BatchNorm2d(num_features))
+            layers.append(nn.GroupNorm(8, num_features))
             layers.append(nn.ReLU(inplace=True))
 
         # Final conv: maps features → residual (1 channel, no activation)

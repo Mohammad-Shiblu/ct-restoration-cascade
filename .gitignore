@@ -18,3 +18,5 @@ medical_image_datasets/
 *.pt
 __pycache__/
 .venv/
+Thesis_report/
+data/
