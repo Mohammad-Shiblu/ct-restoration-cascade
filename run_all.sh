@@ -1,22 +1,25 @@
 #!/usr/bin/env bash
 # run_all.sh
 # ==========
-# Full experimental pipeline for the LoDoPaB-CT artifact study.
+# Full experimental pipeline — 4× RTX 3090, 7 training jobs.
+# BM3D is excluded (already evaluated locally).
 #
-# Run one copy of this script per GPU, passing CUDA_VISIBLE_DEVICES.
-# Assign jobs across your three rented GPUs:
+# Launch all four GPU workers simultaneously from one terminal:
 #
-#   GPU 0 — RTX 5090  (fastest):
-#       CUDA_VISIBLE_DEVICES=0 bash run_all.sh gpu0
+#   mkdir -p output
+#   CUDA_VISIBLE_DEVICES=0 bash run_all.sh gpu0 > output/run_log_gpu0.txt 2>&1 &
+#   CUDA_VISIBLE_DEVICES=1 bash run_all.sh gpu1 > output/run_log_gpu1.txt 2>&1 &
+#   CUDA_VISIBLE_DEVICES=2 bash run_all.sh gpu2 > output/run_log_gpu2.txt 2>&1 &
+#   CUDA_VISIBLE_DEVICES=3 bash run_all.sh gpu3 > output/run_log_gpu3.txt 2>&1 &
 #
-#   GPU 1 — RTX 5090:
-#       CUDA_VISIBLE_DEVICES=1 bash run_all.sh gpu1
+# Monitor any GPU:
+#   tail -f output/run_log_gpu0.txt
 #
-#   GPU 2 — RTX 5060 Ti  (lighter jobs):
-#       CUDA_VISIBLE_DEVICES=2 bash run_all.sh gpu2
-#
-# Logs are written to output/run_log_<gpu>.txt
-# Use: nohup CUDA_VISIBLE_DEVICES=X bash run_all.sh gpuX > output/run_log_gpuX.txt 2>&1 &
+# Job assignment (estimated finish time from a cold start):
+#   GPU 0 (~16 h): dual-domain residual detach (~10h) → single UNet (~6h)
+#   GPU 1 (~14 h): naive cascade e2e (~8h)  → RED-CNN (~5h)
+#   GPU 2 (~16 h): naive cascade detach (~8h) → residual cascade e2e (~8h)
+#   GPU 3 (~ 8 h): residual cascade detach (~8h)
 
 set -euo pipefail
 
@@ -24,51 +27,62 @@ GPU="${1:-gpu0}"
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$REPO_DIR"
 
-mkdir -p output/baselines
+mkdir -p output checkpoints
 
-PY="conda run -n tensor python"
+PY="python"
 
 echo "============================================================"
 echo "  EXPERIMENT PIPELINE — GPU: $GPU — $(date)"
 echo "============================================================"
 
+run_job() {
+    local label="$1"
+    local config="$2"
+    echo ""
+    echo ">>> [$GPU] START: $label — $(date)"
+    $PY main_lodopab.py "$config"
+    echo ">>> [$GPU] DONE:  $label — $(date)"
+    echo ""
+}
+
 case "$GPU" in
 
-  # ── GPU 0: RTX 5090 ─────────────────────────────────────────────────────────
+  # ── GPU 0 (~16 h) ────────────────────────────────────────────────────────────
+  # Longest job first so the GPU is never idle waiting for a short warm-up job.
   gpu0)
-    echo "[GPU0] Job 1/2: BM3D (CPU-bound, ~3h)"
-    $PY baselines/bm3d_eval.py
-    echo "[GPU0] BM3D done: $(date)"
+    run_job "Residual cascade — detach — dual-domain" \
+            config/lodopab_ds_residual_cascade_detach_dual_train.json
 
-    echo "[GPU0] Job 2/2: Single-stage U-Net [64,128,256,512] (~6h)"
-    $PY main_lodopab.py config/lodopab_ds_baseline_unet_train.json
-    echo "[GPU0] U-Net done: $(date)"
+    run_job "Single-stage U-Net [64,128,256,512]" \
+            config/lodopab_ds_baseline_unet_train.json
     ;;
 
-  # ── GPU 1: RTX 5090 ─────────────────────────────────────────────────────────
+  # ── GPU 1 (~14 h) ────────────────────────────────────────────────────────────
   gpu1)
-    echo "[GPU1] Job 1/2: 2-stage cascade, e2e, direct (naive) (~8h)"
-    $PY main_lodopab.py config/lodopab_ds_naive_cascade_e2e_train.json
-    echo "[GPU1] Cascade e2e done: $(date)"
+    run_job "Naive cascade — e2e (joint, no detach)" \
+            config/lodopab_ds_naive_cascade_e2e_train.json
 
-    echo "[GPU1] Job 2/2: 2-stage cascade, e2e, residual (~8h)"
-    $PY main_lodopab.py config/lodopab_ds_residual_cascade_e2e_train.json
-    echo "[GPU1] Residual cascade done: $(date)"
+    run_job "RED-CNN baseline" \
+            config/lodopab_ds_baseline_redcnn_train.json
     ;;
 
-  # ── GPU 2: RTX 5060 Ti ──────────────────────────────────────────────────────
+  # ── GPU 2 (~16 h) ────────────────────────────────────────────────────────────
   gpu2)
-    echo "[GPU2] Job 1/2: RED-CNN (~5h)"
-    $PY main_lodopab.py config/lodopab_ds_baseline_redcnn_train.json
-    echo "[GPU2] RED-CNN done: $(date)"
+    run_job "Naive cascade — detach (independent stages)" \
+            config/lodopab_ds_naive_cascade_detach_train.json
 
-    echo "[GPU2] Job 2/2: 2-stage cascade, detach, direct (independent) (~8h)"
-    $PY main_lodopab.py config/lodopab_ds_naive_cascade_detach_train.json
-    echo "[GPU2] Cascade detach done: $(date)"
+    run_job "Residual cascade — e2e (joint, no detach)" \
+            config/lodopab_ds_residual_cascade_e2e_train.json
+    ;;
+
+  # ── GPU 3 (~8 h) ─────────────────────────────────────────────────────────────
+  gpu3)
+    run_job "Residual cascade — detach (independent stages)" \
+            config/lodopab_ds_residual_cascade_detach_train.json
     ;;
 
   *)
-    echo "Unknown GPU label '$GPU'. Use: gpu0, gpu1, or gpu2"
+    echo "Unknown GPU label '$GPU'. Use: gpu0, gpu1, gpu2, or gpu3"
     exit 1
     ;;
 esac
