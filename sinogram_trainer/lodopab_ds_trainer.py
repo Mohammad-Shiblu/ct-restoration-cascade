@@ -180,8 +180,11 @@ class LoDoPaBDeepSupervisionTrainer(BaseTrainer):
                         features=features, output_activation=activation,
                     ).to(self.device)
             elif self.stage1_mode == "direct":
-                # Naive cascade: same architecture and activation as Stage 0
-                features   = self.config.get("stage0_features", [32, 64, 128, 256])
+                # Naive cascade: prefer stage1_features if set, else match Stage 0
+                features   = self.config.get(
+                    "stage1_features",
+                    self.config.get("stage0_features", [32, 64, 128, 256])
+                )
                 activation = "sigmoid"
                 model = UNet(
                     in_channels=1, out_channels=1,
@@ -189,7 +192,7 @@ class LoDoPaBDeepSupervisionTrainer(BaseTrainer):
                 ).to(self.device)
             else:
                 # Residual cascade (default)
-                features   = self.config.get("stage1_features", [16, 32, 64, 128, 256])
+                features   = self.config.get("stage1_features", [32, 64, 128, 256])
                 activation = "tanh"
                 in_ch      = 3 if self.dual_domain else 1
                 model = ResUNet(
