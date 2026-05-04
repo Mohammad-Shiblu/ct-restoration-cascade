@@ -142,7 +142,27 @@ else
 fi
 
 echo "  Compiling CUDA kernels (this takes 2–5 minutes) ..."
-cd /tmp/torch-radon && conda run -n "$ENV_NAME" python setup.py install
+# Determine CUDA_HOME: prefer system-wide install (Vast.ai); fall back to conda prefix.
+CUDA_HOME_COMPILE=$(conda run -n "$ENV_NAME" python3 - << 'PYEOF'
+import os, sys
+if os.path.isdir("/usr/local/cuda"):
+    print("/usr/local/cuda")
+else:
+    print(sys.prefix)
+PYEOF
+)
+# Collect CUDA header dirs from pip-installed nvidia packages (conda-managed CUDA setups).
+CPATH_EXTRA=$(conda run -n "$ENV_NAME" python3 - << 'PYEOF'
+import glob, site
+dirs = [d for sp in site.getsitepackages() for d in glob.glob(sp + '/nvidia/*/include')]
+print(':'.join(dirs))
+PYEOF
+)
+echo "  CUDA_HOME : $CUDA_HOME_COMPILE"
+echo "  CPATH     : $CPATH_EXTRA"
+cd /tmp/torch-radon && \
+    CUDA_HOME="$CUDA_HOME_COMPILE" CPATH="$CPATH_EXTRA" \
+    conda run -n "$ENV_NAME" python setup.py install
 cd "$REPO_DIR"
 
 # Patches 2c/2d/2e operate on the installed package, so locate it dynamically.
