@@ -41,7 +41,7 @@ import bm3d
 # ── project root on path ──────────────────────────────────────────────────────
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from sinogram_trainer.parallel_fbp import DifferentiableParallelFBP
+from trainer.parallel_fbp import DifferentiableParallelFBP
 from utils.lodopab_dataset import LoDoPaBDataset
 from utils.metrics import compute_psnr, compute_ssim, compute_rmse
 
