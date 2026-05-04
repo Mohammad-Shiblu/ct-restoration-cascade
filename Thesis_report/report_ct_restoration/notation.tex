@@ -1,0 +1,27 @@
+% Notation table — required by LME guidelines (§1.6.4):
+% all mathematical symbols used in the thesis must be defined exactly once.
+
+\chapter*{Notation}
+\addcontentsline{toc}{chapter}{Notation}
+
+\begin{tabular}{p{0.18\textwidth} p{0.75\textwidth}}
+    \toprule
+    \textbf{Symbol} & \textbf{Meaning} \\
+    \midrule
+    $\boldsymbol{x}$        & Ground-truth CT image (2D slice, linearised to vector when needed) \\
+    $\boldsymbol{\hat{x}}$  & Network-predicted (restored) CT image \\
+    $\boldsymbol{s}$        & Clean sinogram (Radon transform of $\boldsymbol{x}$) \\
+    $\boldsymbol{\tilde{s}}$& Corrupted sinogram after artifact injection \\
+    $\boldsymbol{y}$        & Input to the restoration network (FBP of $\boldsymbol{\tilde{s}}$) \\
+    $\mu(\boldsymbol{r})$   & Linear attenuation coefficient at position $\boldsymbol{r}$ \\
+    $I_0$                   & Incident photon count (controls dose level) \\
+    $N$                     & Measured photon count; $N \sim \mathrm{Poisson}(I_0 e^{-s})$ \\
+    $\mathcal{R}$           & Radon transform operator \\
+    $\mathcal{R}^{-1}$      & Filtered back-projection (FBP) operator \\
+    $\boldsymbol{\theta}$   & Learnable parameters of a network \\
+    $\mathcal{L}$           & Training loss (L1 / MAE unless stated otherwise) \\
+    $f_k(\cdot;\boldsymbol{\theta}_k)$ & The $k$-th stage network \\
+    $\boldsymbol{x}_k$      & Output of the $k$-th cascade stage \\
+    $\|\cdot\|_1$           & $\ell^1$ norm (element-wise mean absolute value in loss context) \\
+    \bottomrule
+\end{tabular}

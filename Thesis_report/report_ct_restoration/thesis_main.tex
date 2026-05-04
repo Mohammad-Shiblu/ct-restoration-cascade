@@ -1,0 +1,187 @@
+% Document class for LME theses: lmedoc
+% %LANGUAGE
+% %CONFIG
+%    The option "german" uses german.sty
+%    For english papers, use the "english" option
+% Possible types of theses:
+% bt - Bachelor's thesis
+% mt - Master's thesis
+% diss - Dissertation
+% sa - Student thesis
+% fp - Forschungspraktikum
+% pa - Projektarbeit
+%\documentclass[german,bt]{lmedoc/lmedoc}
+\documentclass[english,mt]{lmedoc/lmedoc}
+
+
+%%%%%%%%%%%%%%%%%%
+% pdflatex and lualatex are supported
+% ++ "Umlaut" support
+%    The package "inputenc" can be used to write Umlaute or the german double s
+%    directly. You need to use the correct encoding, e.g. latin1.
+\usepackage{iftex}
+\ifPDFTeX
+  \usepackage[utf8]{inputenc}
+  \usepackage[T1]{fontenc}
+  \usepackage{lmodern}
+\else
+  \ifXeTeX
+     \usepackage{fontspec}
+  \else 
+     \usepackage{luatextra}
+  \fi
+\fi
+
+%Load additional packages
+\usepackage{lmedoc/packages}
+% TikZ libraries used by the methodology pipeline figure
+\usetikzlibrary{positioning,arrows.meta,shapes.geometric}
+% \FloatBarrier for keeping figures within their section
+\usepackage{placeins}
+% put in this file your abbreviations
+\input{abbreviations.tex}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+% supress messages because of underful hbox, this is not a problem
+\hbadness=10000
+
+
+
+% some useful commands
+\makeatletter % let's define a single dot
+\DeclareRobustCommand\onedot{\futurelet\@let@token\@onedot}
+\newcommand{\@onedot}{\ifx\@let@token.\else.\null\fi\xspace}
+% float pages: pin content to top instead of vertically centring
+\setlength\@fptop{0pt}
+\makeatother
+
+
+
+% Sets the bib file
+
+\addbibresource{literature.bib}
+
+% When writing a large document, it is sometimes useful to work on selected sections of the document.
+% Use this command to only build the document partially. Speeds up the developement cycle.
+% For the final product, this has to be commented out.
+%\includeonly{introduction,appendix,foo,bar}
+
+
+\pagenumbering{roman}
+
+\begin{document}
+\clearpage
+% %CONFIG
+% This is for students' theses
+  \begin{deckblatt}
+    \Titel{A Cascaded Encoder-Decoder for CT Image Restoration} % Title
+    \Name{Shiblu} % Last name
+    \Vorname{Mohammad} % Given name
+    \Geburtsort{Dhaka} % Place of birth
+    \Geburtsdatum{02.07.1996} % Date of birth
+    \Betreuer{Yipeng Sun, Prof. Dr. Andreas Maier} % Advisor
+    \Start{01.11.2025} % Start of thesis
+    \Ende{04.05.2026} % End of thesis
+    %\ZweitInstitut{ZweitInstitut} % Cooperation partner
+  \end{deckblatt}
+
+
+\cleardoublepage
+% Only necessary for thesis
+
+Ich versichere, dass ich die Arbeit ohne fremde Hilfe und ohne Benutzung
+anderer als der angegebenen Quellen angefertigt habe und dass die Arbeit
+in gleicher oder "ahnlicher Form noch keiner anderen Pr"ufungsbeh"orde
+vorgelegen hat und von dieser als Teil einer Pr"ufungsleistung
+angenommen wurde. Alle Ausf"uhrungen, die w"ortlich oder sinngem"a"s
+"ubernommen wurden, sind als solche gekennzeichnet.
+
+Die Richtlinien des Lehrstuhls für Examensarbeiten habe ich gelesen und anerkannt,
+insbesondere die Regelung des Nutzungsrechts in Punkt 2.5
+
+\vspace*{2cm}  % medium space
+\noindent
+\begin{tabular}{p{0.5\textwidth} p{0.5\textwidth}}
+Erlangen, den ........ &  \centering Unterschrift
+\end{tabular}
+
+
+\cleardoublepage
+
+
+\begin{center}
+\bfseries
+% Abstract in German (max 0.5 pages, required by LME guidelines §1.3)
+{\selectlanguage{german}"Ubersicht}
+\normalfont
+\end{center}
+
+{\selectlanguage{german}%
+CT-Bilder in der klinischen Praxis leiden häufig unter zusammengesetzter Degradation durch Poisson-Rauschen sowie Bewegungs-, Ring- und Metallartefakte, während die meisten Restaurationsverfahren diese Effekte getrennt behandeln. Diese Arbeit untersucht, ob kaskadierte Encoder--Decoder-Netzwerke die CT-Bildrestauration unter solcher zusammengesetzter Korruption verbessern, indem ein physikalisch motiviertes Korruptionsprotokoll im Sinogrammbereich für LoDoPaB-CT entwickelt und drei zweistufige Varianten verglichen werden: unabhängiges stufenweises Training, End-to-End-Training und eine Residualformulierung.
+
+Ein großes einstufiges U-Net erreicht unter der vorgeschlagenen Korruption 36.11 dB PSNR. Bei gleicher kleiner Kapazität pro Stufe bringt eine zusätzliche zweite Stufe nur begrenzte Verbesserungen gegenüber der kleinen einstufigen Basisvariante (35.39 dB), nämlich +0.15 bis +0.72 dB. Die beste kleine Kaskade, basierend auf Residualvorhersage mit Hann- und Shepp--Logan-gefilterten FBP-Eingaben, erreicht ebenfalls 36.11 dB, übertrifft die große einstufige Referenz jedoch nicht. Die Gradientenanalyse zeigt eine Abschwächung des Lernsignals der zweiten Stufe während der Konvergenz von Stufe 1, was darauf hindeutet, dass die für Stufe 2 verfügbare Information und nicht allein die Tiefe den Hauptengpass bildet.
+}
+
+\vspace{1.5cm}
+
+\begin{center}
+\bfseries
+% Abstract in English (max 0.5 pages)
+{\selectlanguage{english}Abstract}
+\normalfont
+\end{center}
+
+{\selectlanguage{english}%
+CT images in clinical practice often suffer from compound degradation caused by Poisson noise together with motion, ring, and metal artifacts, yet most restoration methods treat these effects separately. This thesis investigates whether cascaded encoder--decoder networks improve CT image restoration under such compound corruption by developing a physics-informed sinogram-domain corruption protocol for LoDoPaB-CT and comparing three two-stage formulations: independent-stage, end-to-end, and residual.
+
+A single large U-Net reaches 36.11 dB PSNR under the proposed corruption. At matched small per-stage capacity, adding a second stage yields only limited gains over the small single-stage baseline (35.39 dB), ranging from +0.15 to +0.72 dB. The best small cascade, using residual prediction with Hann- and Shepp--Logan-filtered FBP inputs, matches the large single-stage reference at 36.11 dB without exceeding it. Gradient analysis shows attenuation of the Stage-2 learning signal as Stage-1 converges, indicating that information available to the second stage, rather than depth alone, is the main bottleneck.}
+
+
+\cleardoublepage
+
+% Notation table (required: all math symbols defined once, LME §1.6.4)
+\input{notation.tex}
+\cleardoublepage
+
+\tableofcontents
+
+\cleardoublepage \pagenumbering{arabic}
+
+\include{introduction}       % Chapter 1: Introduction
+\cleardoublepage
+\include{background}         % Chapter 2: Background
+\cleardoublepage
+\include{methodology}        % Chapter 3: Methodology (corruption + cascade architectures)
+\cleardoublepage
+\include{experiments}        % Chapter 4: Experiments and Results
+\cleardoublepage
+\include{conclusion}         % Chapter 5: Conclusion and Outlook
+\cleardoublepage
+
+\appendix
+\cleardoublepage
+\include{appendix}           % Appendix A/B/C
+\cleardoublepage
+
+%% Do not change, auto-generated lists of figures, tables and literature %%
+% Glossar
+\printunsrtglossary[type=abbreviations]
+\cleardoublepage
+
+% List of figures
+\addcontentsline{toc}{chapter}{\listfigurename}
+\listoffigures
+\cleardoublepage
+
+% List of tables
+\addcontentsline{toc}{chapter}{\listtablename}
+\listoftables
+\cleardoublepage
+
+% Literature list
+% %CONFIG:
+%\selectlanguage{german}{\addcontentsline{toc}{chapter}{\bibname}}
+\selectlanguage{english}{\addcontentsline{toc}{chapter}{\bibname}}
+
+\printbibliography
+\end{document}

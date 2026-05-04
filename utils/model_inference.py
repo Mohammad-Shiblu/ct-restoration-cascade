@@ -267,7 +267,7 @@ def plot_results(noisy_t, stage_tensors, gt_t, config,
     for s, out_t in enumerate(stage_tensors):
         s_psnr = compute_psnr(out_t, gt_t, data_range=DR)
         s_ssim = compute_ssim(out_t, gt_t, data_range=DR)
-        label  = "Single-stage" if len(stage_tensors) == 1 else f"Stage {s}"
+        label  = "Single-stage" if len(stage_tensors) == 1 else f"Stage {s+1}"
         _show(axes[s + 1], out_t, f"{label}\nPSNR {s_psnr:.2f} dB  SSIM {s_ssim:.4f}")
 
     _show(axes[-1], gt_t, "Ground Truth")

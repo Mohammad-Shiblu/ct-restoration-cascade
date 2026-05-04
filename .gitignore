@@ -20,3 +20,11 @@ __pycache__/
 .venv/
 data/
 extern/
+
+# Figure generation scripts (moved to scripts/ — not part of core pipeline)
+scripts/generate_figures.py
+scripts/qual_figures.py
+
+# LaTeX compiled outputs
+Thesis_report/*.pdf
+Thesis_report/*.zip
