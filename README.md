@@ -116,7 +116,9 @@ bash scripts/setup_environment.sh myenv      # custom env name
 | Replace `np.int` with `int` | Removed in NumPy 1.24 |
 | Fix Fourier-filter broadcast shape | Complex tensor API change |
 
-**Tested on:** CUDA 12.6, CUDA 13.0 / PyTorch 2.x / Python 3.12
+**Tested on:** CUDA 12.6, CUDA 13.0 / PyTorch 2.x / Python 3.12 / Linux
+
+> **Windows:** the setup script requires bash (Linux/macOS). On Windows use WSL2.
 
 ### 3. Download the dataset
 

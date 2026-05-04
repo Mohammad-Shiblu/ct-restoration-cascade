@@ -46,9 +46,12 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 echo ""
 
 # ── Detect CUDA major version ─────────────────────────────────────────────────
-CUDA_MAJOR=$(nvcc --version 2>/dev/null \
-    | grep -oP 'release \K[0-9]+' \
-    || echo "0")
+# Try nvcc first (system-wide); fall back to nvidia-smi driver report.
+CUDA_MAJOR=$(
+    nvcc --version 2>/dev/null | grep -oP 'release \K[0-9]+' ||
+    nvidia-smi 2>/dev/null   | grep -oP 'CUDA Version: \K[0-9]+' ||
+    echo "0"
+)
 echo "Detected CUDA major version: $CUDA_MAJOR"
 
 # Map to the closest PyTorch wheel index
@@ -95,6 +98,13 @@ echo "[4/5] Compiling torch_radon v1.0.0 from source ..."
 echo "      (matteo-ronchetti/torch-radon — unmaintained, requires patches)"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
+# Install cuda-nvcc into the env so setup.py can compile CUDA kernels.
+# (nvcc is conda-managed and may not be present system-wide.)
+echo "  Installing cuda-nvcc into $ENV_NAME ..."
+conda install -y -n "$ENV_NAME" -c nvidia cuda-nvcc="$CUDA_MAJOR.*" 2>/dev/null || \
+    echo "  Warning: cuda-nvcc conda install failed — compilation may fail if nvcc is not in PATH."
+
+rm -rf /tmp/torch-radon
 git clone https://github.com/matteo-ronchetti/torch-radon.git /tmp/torch-radon
 
 # Patch 2a: CUDA 13 dropped Pascal (sm_60/70) and Turing (sm_75) support.
@@ -104,9 +114,10 @@ echo "  [patch 2a] Restricting GPU architectures to sm_80, sm_86 ..."
 python3 - << 'PYEOF'
 f = '/tmp/torch-radon/build_tools/__init__.py'
 txt = open(f).read()
+# NOTE: the upstream source has a typo — "compute_capabilites" (missing 'i').
 txt = txt.replace(
-    'def build(compute_capabilities=(60, 70, 75, 80, 86),',
-    'def build(compute_capabilities=(80, 86),'
+    'def build(compute_capabilites=(60, 70, 75, 80, 86),',
+    'def build(compute_capabilites=(80, 86),'
 )
 open(f, 'w').write(txt)
 print('  done.')
